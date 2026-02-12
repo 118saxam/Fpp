@@ -95,7 +95,7 @@ function startSilent() {
   osc.type = 'sine';
 
   // set gain to zero (silent)
-  gain.gain.value = 0;
+  gain.gain.value = 0.000001;
 
   osc.connect(gain);
   gain.connect(audioCtx.destination);
