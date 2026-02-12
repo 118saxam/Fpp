@@ -1,137 +1,163 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Headset Button Toy</title>
-    <style>
-        body {
-            font-family: monospace;
-            background: #121212;
-            color: #00ff41;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            height: 100vh;
-            margin: 0;
-            user-select: none;
-        }
-        h1 { margin-bottom: 20px; text-align: center; }
-        #status { margin-bottom: 30px; color: #888; text-align: center; }
-        button {
-            background: #00ff41;
-            color: #000;
-            border: none;
-            padding: 15px 30px;
-            font-size: 1.2rem;
-            font-family: inherit;
-            cursor: pointer;
-            border-radius: 5px;
-            font-weight: bold;
-        }
-        button:active { transform: scale(0.95); }
-        .log {
-            margin-top: 20px;
-            font-size: 0.8rem;
-            color: #666;
-            max-height: 150px;
-            overflow-y: auto;
-            width: 80%;
-            text-align: left;
-            border-top: 1px solid #333;
-            padding-top: 10px;
-        }
-    </style>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Silent Media Hijack</title>
+  <style>
+    body { font-family: system-ui, -apple-system, Roboto, "Segoe UI", Arial; display:flex; height:100vh;
+           align-items:center; justify-content:center; gap:12px; flex-direction:column; background:#111; color:#eee; }
+    button { padding:10px 16px; border-radius:8px; border:0; cursor:pointer; font-weight:600; }
+    #start { background: #22c55e; color:#042; }
+    #stop  { background: #ef4444; color:#420; }
+    small { opacity:0.8; max-width:720px; text-align:center; display:block; margin-top:8px; color:#bbb; }
+  </style>
 </head>
 <body>
+  <h2>Silent Media Hijack</h2>
+  <div>
+    <button id="start">Start (user gesture)</button>
+    <button id="stop" disabled>Stop</button>
+  </div>
+  <small>
+    Click <strong>Start</strong>. Then, while some other music app is playing, try the wired-headphone play/pause button —
+    behavior depends on platform/browser.
+  </small>
 
-    <h1>HEADSET BUTTON TOY</h1>
-    <div id="status">Status: Idle (System Normal)</div>
-    <button id="toggleBtn">START HIJACK</button>
-    <div class="log" id="logArea"></div>
+<script>
+/*
+  How it works (brief):
+  - On a user click we create an AudioContext and an Oscillator connected to a Gain node set to 0.
+  - The oscillator is started and looped; since the audio graph is active the page becomes an active media session.
+  - We register Media Session handlers for play/pause so hardware play/pause events are handled by this page.
+  - Note: browsers/OSes vary; this may not work everywhere (see notes below).
+*/
 
-    <!-- 1. THE SOUND EFFECT (The chime you want to hear) -->
-    <audio id="sfx" src="mixkit-page-forward-single-chime-1107.wav"></audio>
+let audioCtx = null;
+let osc = null;
+let gain = null;
+let isRunning = false;
 
-    <!-- 2. THE SILENT BACKGROUND (Keeps the headset active) -->
-    <!-- This is a Base64 string for 1 second of pure silence -->
-    <audio id="silence" loop src="data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA=="></audio>
+const startBtn = document.getElementById('start');
+const stopBtn  = document.getElementById('stop');
 
-    <script>
-        const btn = document.getElementById('toggleBtn');
-        const status = document.getElementById('status');
-        const logArea = document.getElementById('logArea');
-        const sfx = document.getElementById('sfx');
-        const silence = document.getElementById('silence');
+function setupMediaSession() {
+  try {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: 'Silent session',
+        artist: '',
+        album: ''
+      });
 
-        let isHijacked = false;
-        let pressCount = 0;
+      // When hardware play/pause pressed, these handlers will run.
+      // We purposely keep the silent audio running so other apps are less likely to become the active target.
+      navigator.mediaSession.setActionHandler('play', () => {
+        // resume audio if suspended
+        if (audioCtx && audioCtx.state !== 'running') audioCtx.resume();
+        isRunning = true;
+        updateButtons();
+      });
+      navigator.mediaSession.setActionHandler('pause', () => {
+        // attempt to ignore pause: quickly resume (this behavior may or may not override the system)
+        // We'll try to resume after a short delay to cancel the pause effect.
+        setTimeout(() => {
+          if (audioCtx && audioCtx.state !== 'running') {
+            audioCtx.resume().catch(()=>{/* ignore */});
+          }
+          isRunning = true;
+          updateButtons();
+        }, 50);
+      });
 
-        function log(msg) {
-            logArea.innerText = `> ${msg}\n` + logArea.innerText;
-        }
+      // optional: handle stop/seek if supported, keep them no-op or restart
+      ['stop','seekbackward','seekforward','previoustrack','nexttrack'].forEach(action => {
+        try { navigator.mediaSession.setActionHandler(action, ()=>{/* noop to claim */}); } catch(e) {}
+      });
+    }
+  } catch (e) {
+    // non-fatal
+    console.warn('mediaSession not available or handler registration failed', e);
+  }
+}
 
-        function playSfx() {
-            // We reset the audio to the start in case of rapid clicks
-            sfx.currentTime = 0;
-            sfx.play().catch(e => console.error("SFX Error:", e));
-            
-            // Visual feedback
-            document.body.style.backgroundColor = '#1a1a1a';
-            setTimeout(() => document.body.style.backgroundColor = '#121212', 100);
-            
-            pressCount++;
-            log(`Headset Button Detected! (Count: ${pressCount})`);
-        }
+function startSilent() {
+  if (isRunning) return;
+  // create/resume AudioContext
+  audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
 
-        btn.addEventListener('click', async () => {
-            if (!isHijacked) {
-                try {
-                    // Start the silent loop
-                    await silence.play();
-                    setupMediaSession();
-                    
-                    isHijacked = true;
-                    btn.innerText = "STOP HIJACK";
-                    btn.style.background = "#ff4141";
-                    status.innerText = "Status: Hijacked\n(Press your headset Play/Pause button)";
-                    log("Hijack Started. I am now listening for headset buttons.");
-                } catch (err) {
-                    alert("Click failed. Please ensure you have interacted with the page first.");
-                }
-            } else {
-                silence.pause();
-                isHijacked = false;
-                btn.innerText = "START HIJACK";
-                btn.style.background = "#00ff41";
-                status.innerText = "Status: Idle";
-                log("Hijack Stopped.");
-            }
-        });
+  // create oscillator and silent gain
+  osc = audioCtx.createOscillator();
+  gain = audioCtx.createGain();
 
-        function setupMediaSession() {
-            if ('mediaSession' in navigator) {
-                navigator.mediaSession.metadata = new MediaMetadata({
-                    title: "Headset Toy",
-                    artist: "Active",
-                    album: "Button Interceptor"
-                });
+  // frequency value is irrelevant because gain=0. We still pick a safe audible freq.
+  osc.frequency.value = 440;
+  osc.type = 'sine';
 
-                // This function handles the button press
-                const actionHandler = () => {
-                    playSfx();
-                    // Keep the state "playing" so the headset doesn't think we've stopped
-                    navigator.mediaSession.playbackState = "playing";
-                };
+  // set gain to zero (silent)
+  gain.gain.value = 0;
 
-                // Intercept all common headset buttons
-                navigator.mediaSession.setActionHandler('play', actionHandler);
-                navigator.mediaSession.setActionHandler('pause', actionHandler);
-                navigator.mediaSession.setActionHandler('nexttrack', actionHandler);
-                navigator.mediaSession.setActionHandler('previoustrack', actionHandler);
-            }
-        }
-    </script>
+  osc.connect(gain);
+  gain.connect(audioCtx.destination);
+
+  // start oscillator
+  try {
+    osc.start();
+  } catch (e) {
+    // if already started (rare), ignore
+  }
+
+  isRunning = true;
+  setupMediaSession();
+  updateButtons();
+}
+
+function stopSilent() {
+  if (!isRunning) return;
+  try {
+    if (osc) {
+      try { osc.stop(); } catch(e) {}
+      osc.disconnect();
+      osc = null;
+    }
+    if (gain) {
+      try { gain.disconnect(); } catch(e) {}
+      gain = null;
+    }
+    if (audioCtx) {
+      // try suspend to free system media focus
+      audioCtx.suspend && audioCtx.suspend();
+      // We do not close the context to allow quick restart, but you can close() if you want.
+    }
+  } catch (e) {
+    console.warn(e);
+  }
+  isRunning = false;
+  updateButtons();
+}
+
+function updateButtons() {
+  startBtn.disabled = isRunning;
+  stopBtn.disabled = !isRunning;
+}
+
+startBtn.addEventListener('click', async () => {
+  // user gesture required by many browsers to start audio
+  startSilent();
+});
+
+stopBtn.addEventListener('click', () => {
+  stopSilent();
+});
+
+// remove session metadata on unload
+window.addEventListener('pagehide', () => {
+  try {
+    if ('mediaSession' in navigator) {
+      navigator.mediaSession.metadata = null;
+    }
+  } catch(e){}
+});
+</script>
 </body>
 </html>
